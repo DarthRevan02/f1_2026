@@ -104,41 +104,54 @@ def compute_gap_to_pole(df: pd.DataFrame) -> pd.DataFrame:
 def filter_noise(df: pd.DataFrame) -> pd.DataFrame:
     """
     Remove laps the model fundamentally cannot learn from.
-    Each filter is logged with the exact number of laps removed.
-
-    This is the second-largest R² improvement after target choice.
-    Outlier laps add irreducible noise — removing them tightens
-    the residual distribution and raises R² significantly.
+    Session-aware: qualifying laps have different valid ranges
+    than race laps, so filtering adapts per session_type.
     """
     n = len(df)
 
-    # SC/VSC/red flag laps — artificially slow, corrupt tyre deg learning
-    df = df[df["TrackStatus_encoded"].isin(FILTER_TRACK_STATUS)]
-    print(f"    Track status   : -{n - len(df):>6} laps  (SC/VSC/red flag)")
+    # Ensure session_type exists — default to "race" for historical data
+    if "session_type" not in df.columns:
+        df["session_type"] = "race"
+
+    is_quali_type = df["session_type"].isin(["quali", "sprint_quali"])
+
+    # SC/VSC/red flag: only filter race/sprint sessions
+    # Quali red flags already abort the lap — time will be NaN or slow
+    race_clean  = df[~is_quali_type & df["TrackStatus_encoded"].isin(FILTER_TRACK_STATUS)]
+    quali_clean = df[is_quali_type]
+    df = pd.concat([race_clean, quali_clean], ignore_index=True)
+    print(f"    Track status   : -{n - len(df):>6} laps  (SC/VSC — race/sprint only)")
     n = len(df)
 
-    # Opening laps — cold tyres + max fuel spike → not representative
-    df = df[df["LapNumber"] >= FILTER_MIN_LAP_NUMBER]
-    print(f"    Opening laps   : -{n - len(df):>6} laps  (first {FILTER_MIN_LAP_NUMBER} laps)")
+    # Opening laps: only filter race/sprint (quali has no fuel/cold tyre issue)
+    race_df  = df[~df["session_type"].isin(["quali","sprint_quali"])]
+    quali_df = df[ df["session_type"].isin(["quali","sprint_quali"])]
+    race_df  = race_df[race_df["LapNumber"] >= FILTER_MIN_LAP_NUMBER]
+    df = pd.concat([race_df, quali_df], ignore_index=True)
+    print(f"    Opening laps   : -{n - len(df):>6} laps  (first {FILTER_MIN_LAP_NUMBER} — race/sprint only)")
     n = len(df)
 
-    # Out-laps — tyre warming lap, not representative pace
+    # Out-laps: apply to all sessions
     df = df[df["TyreLife"] >= FILTER_MIN_TYRE_LIFE]
     print(f"    Out-laps       : -{n - len(df):>6} laps  (TyreLife < {FILTER_MIN_TYRE_LIFE})")
     n = len(df)
 
-    # Top 2% raw lap times — traffic, errors, unreported incidents
-    ceil = df["LapTime_s"].quantile(FILTER_LAPTIME_QUANTILE)
-    df = df[df["LapTime_s"] <= ceil]
-    print(f"    Lap time p98   : -{n - len(df):>6} laps  (>{ceil:.1f}s)")
+    # Top 2% per session type (so fast quali laps don't get cut by race percentile)
+    clean_parts = []
+    for stype, grp in df.groupby("session_type"):
+        ceil = grp["LapTime_s"].quantile(FILTER_LAPTIME_QUANTILE)
+        clean_parts.append(grp[grp["LapTime_s"] <= ceil])
+    df = pd.concat(clean_parts, ignore_index=True)
+    print(f"    Lap time p98   : -{n - len(df):>6} laps  (per session type)")
     n = len(df)
 
-    # Massive gap-to-pole: DNF laps crawling back to pit, not racing
+    # Gap ceiling: applies to all sessions
     df = df[df["gap_to_pole"] <= FILTER_MAX_GAP_TO_POLE]
     df = df[df["gap_to_pole"] >= 0]
     print(f"    Gap ceiling    : -{n - len(df):>6} laps  (>{FILTER_MAX_GAP_TO_POLE}s off pace)")
 
-    print(f"    → {len(df)} clean laps remaining")
+    summary = df.groupby("session_type").size().to_dict()
+    print(f"    → {len(df):,} clean laps  {summary}")
     return df.copy()
 
 
@@ -302,7 +315,7 @@ def encode_and_save(df: pd.DataFrame, col: str) -> pd.DataFrame:
     le = LabelEncoder()
     df[f"{col}_encoded"] = le.fit_transform(df[col].astype(str))
     joblib.dump(le, f"./models/encoder_{col}.pkl")
-    print(f"  Encoded '{col}' → {len(le.classes_)} classes")
+    print(f"  Encoded '{col}' → {len(le.classes_)} classes: {list(le.classes_)}")
     return df
 
 
@@ -338,6 +351,16 @@ def main():
 
     # ── Grid normalisation ────────────────────────────────
     print("\n[2/9] Normalising to 2026 grid...")
+
+    # Ensure session_type exists — historical data fetched before
+    # multi-session support was added may not have this column
+    if "session_type" not in df.columns:
+        df["session_type"] = "race"
+        print("  session_type column missing — defaulting to 'race'")
+    else:
+        session_summary = df["session_type"].value_counts().to_dict()
+        print(f"  Session types in data: {session_summary}")
+
     print_grid_audit()
     df = filter_to_2026_grid_only(df)    # drop non-2026 drivers
     df = normalize_teams(df)              # remap team names + driver→2026 team
@@ -380,10 +403,12 @@ def main():
     df = encode_and_save(df, "Driver")
     df = encode_and_save(df, "Team")
     df = encode_and_save(df, "circuit")
+    df = encode_and_save(df, "session_type")   # race=?, quali=?, sprint=?, sprint_quali=?
     df = df.rename(columns={
-        "Driver_encoded":  "driver_encoded",
-        "Team_encoded":    "team_encoded",
-        "circuit_encoded": "circuit_encoded",
+        "Driver_encoded":       "driver_encoded",
+        "Team_encoded":         "team_encoded",
+        "circuit_encoded":      "circuit_encoded",
+        "session_type_encoded": "session_type_encoded",
     })
 
     # ── Fill NaNs ─────────────────────────────────────────

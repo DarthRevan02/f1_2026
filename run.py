@@ -518,6 +518,8 @@ def _build_scenario(circuit: str, quali_order: list,
             "active_aero_mode":      0,
             "energy_store_pct":      0,
             "fuel_remaining_kg":     0,
+            # session type — always "race" for predictions
+            "session_type_encoded":  _encode_val("session_type", "race"),
             # reliability (not model features — used for penalty)
             "_drv_dnf":  d_dnf,
             "_eng_prob": e_prb,

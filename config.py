@@ -146,7 +146,14 @@ FEATURE_COLS = [
     "speed_temp_interaction",   # SpeedST × TrackTemp — PU output drops in heat
     "fuel_stint_interaction",   # fuel_load_proxy × stint_number — fuel effect by phase
 
-    # ── 10. 2026 REGULATION PLACEHOLDERS ──────────────────
+    # ── 10. SESSION TYPE ──────────────────────────────────
+    # Tells the model which session this lap is from.
+    # Critical: quali laps have very different characteristics
+    # to race laps — the model must not confuse them.
+    # 0=race  1=quali  2=sprint  3=sprint_quali
+    "session_type_encoded",
+
+    # ── 11. 2026 REGULATION PLACEHOLDERS ──────────────────
     # All set to 0 until FastF1 logs 2026 telemetry channels.
     # Already in feature set so model starts using them immediately
     # once real data arrives — no code change required.
