@@ -33,13 +33,32 @@ def safe_total_seconds(td):
         return np.nan
 
 
+def _get_weather_data(session):
+    """
+    Safely retrieve session.weather_data.
+
+    Newer FastF1 versions raise DataNotLoadedError instead of
+    returning None when weather data is unavailable — this wrapper
+    catches that and any other exception, returning None on failure.
+    """
+    try:
+        w = session.weather_data
+        if w is None or (hasattr(w, "empty") and w.empty):
+            return None
+        return w
+    except Exception:
+        return None
+
+
 def extract_weather(session) -> dict:
     """Return mean weather values across the session."""
     defaults = {"AirTemp": 25, "TrackTemp": 35, "Humidity": 50,
                 "WindSpeed": 10, "WindDirection": 180, "Rainfall": 0}
-    if session.weather_data is None or session.weather_data.empty:
+
+    w = _get_weather_data(session)
+    if w is None:
         return defaults
-    w = session.weather_data
+
     return {
         "AirTemp":       float(w["AirTemp"].mean()),
         "TrackTemp":     float(w["TrackTemp"].mean()),
@@ -55,15 +74,18 @@ def extract_lap_weather(session, laps: pd.DataFrame) -> pd.DataFrame:
     Map per-lap weather by finding the closest weather timestamp
     to each lap's start time. Falls back to session average.
     """
-    if session.weather_data is None or session.weather_data.empty:
+    w = _get_weather_data(session)
+
+    if w is None:
         avg = extract_weather(session)
         for k, v in avg.items():
             laps[k] = v
+        laps["track_temp_delta"] = 0
         return laps
 
-    weather = session.weather_data.reset_index()
-    wcols   = ["Time","AirTemp","TrackTemp","Humidity",
-               "WindSpeed","WindDirection","Rainfall"]
+    weather = w.reset_index()
+    wcols   = ["Time", "AirTemp", "TrackTemp", "Humidity",
+               "WindSpeed", "WindDirection", "Rainfall"]
     weather = weather[[c for c in wcols if c in weather.columns]].copy()
 
     # Per-lap weather via merge_asof on Time
@@ -152,8 +174,8 @@ def strategy_features(laps: pd.DataFrame) -> pd.DataFrame:
 
     # Undercut/overcut: did driver pit 1-2 laps before/after field average?
     # Mark laps where pit-in occurred
-    pit_laps = laps[laps["raw_pit_duration"].notna()][["Driver","LapNumber"]].copy()
-    pit_laps = pit_laps.rename(columns={"LapNumber":"pit_lap"})
+    pit_laps = laps[laps["raw_pit_duration"].notna()][["Driver", "LapNumber"]].copy()
+    pit_laps = pit_laps.rename(columns={"LapNumber": "pit_lap"})
 
     laps["undercut_window"] = 0
     laps["overcut_window"]  = 0
@@ -189,7 +211,8 @@ def incident_features(laps: pd.DataFrame) -> pd.DataFrame:
     laps["incidents_in_race"] = laps["is_safety_car_lap"].cumsum()
 
     # Position delta at last SC restart (position change next lap after SC ends)
-    laps["position_delta_sc"] = 0
+    # Initialise as float64 to avoid FutureWarning when assigning float mean values
+    laps["position_delta_sc"] = 0.0
     if "Position" in laps.columns:
         sc_end_laps = laps[
             (laps["is_safety_car_lap"] == 0) &
@@ -197,14 +220,14 @@ def incident_features(laps: pd.DataFrame) -> pd.DataFrame:
         ]["LapNumber"].values
         for lap in sc_end_laps:
             mask = laps["LapNumber"] == lap
-            prev = laps[laps["LapNumber"] == lap - 1][["Driver","Position"]] \
-                      .rename(columns={"Position":"prev_pos"})
-            curr = laps[mask][["Driver","Position"]] \
-                      .rename(columns={"Position":"curr_pos"})
+            prev = laps[laps["LapNumber"] == lap - 1][["Driver", "Position"]] \
+                      .rename(columns={"Position": "prev_pos"})
+            curr = laps[mask][["Driver", "Position"]] \
+                      .rename(columns={"Position": "curr_pos"})
             merged = curr.merge(prev, on="Driver", how="left")
             if not merged.empty:
                 delta_map = (merged["prev_pos"] - merged["curr_pos"]).values
-                laps.loc[mask, "position_delta_sc"] = delta_map.mean() if len(delta_map) else 0
+                laps.loc[mask, "position_delta_sc"] = float(delta_map.mean()) if len(delta_map) else 0.0
 
     return laps
 
@@ -229,7 +252,7 @@ def fetch_session(year: int, round_number: int, circuit: str) -> pd.DataFrame:
     # ── Gap to pole (target variable) ─────────────────────
     fastest = (
         laps.groupby("LapNumber")["LapTime_s"].min()
-        .reset_index().rename(columns={"LapTime_s":"fastest_lap_s"})
+        .reset_index().rename(columns={"LapTime_s": "fastest_lap_s"})
     )
     laps = laps.merge(fastest, on="LapNumber", how="left")
     laps["gap_to_pole"] = (laps["LapTime_s"] - laps["fastest_lap_s"]).clip(lower=0)
@@ -239,8 +262,8 @@ def fetch_session(year: int, round_number: int, circuit: str) -> pd.DataFrame:
 
     # ── Grid + quali gap ──────────────────────────────────
     try:
-        results = session.results[["Abbreviation","GridPosition","Q3","Q2","Q1"]].copy()
-        results.columns = ["Driver","grid_position","Q3","Q2","Q1"]
+        results = session.results[["Abbreviation", "GridPosition", "Q3", "Q2", "Q1"]].copy()
+        results.columns = ["Driver", "grid_position", "Q3", "Q2", "Q1"]
         # Use best quali time available
         results["best_quali_s"] = (
             results["Q3"].apply(safe_total_seconds)
@@ -249,33 +272,33 @@ def fetch_session(year: int, round_number: int, circuit: str) -> pd.DataFrame:
         )
         pole_time = results["best_quali_s"].min()
         results["gap_to_pole_quali"] = (results["best_quali_s"] - pole_time).fillna(0)
-        laps = laps.merge(results[["Driver","grid_position","gap_to_pole_quali"]],
+        laps = laps.merge(results[["Driver", "grid_position", "gap_to_pole_quali"]],
                           on="Driver", how="left")
     except Exception:
-        laps["grid_position"]    = 10
+        laps["grid_position"]     = 10
         laps["gap_to_pole_quali"] = 0
 
     # ── Tyre features ─────────────────────────────────────
-    compound_map = {"SOFT":1,"MEDIUM":2,"HARD":3,"INTERMEDIATE":4,"WET":5,"UNKNOWN":0}
+    compound_map = {"SOFT": 1, "MEDIUM": 2, "HARD": 3, "INTERMEDIATE": 4, "WET": 5, "UNKNOWN": 0}
     laps["tyre_compound_encoded"] = (
         laps["Compound"].str.upper().map(compound_map).fillna(0).astype(int)
     )
     laps["is_fresh_tyre"] = laps["FreshTyre"].fillna(False).astype(int)
 
     # Tyre degradation rate: slope of lap time vs TyreLife per driver per stint
-    laps = laps.sort_values(["Driver","LapNumber"])
+    laps = laps.sort_values(["Driver", "LapNumber"])
     laps["tyre_deg_rate"] = (
-        laps.groupby(["Driver","Stint"])["LapTime_s"]
+        laps.groupby(["Driver", "Stint"])["LapTime_s"]
         .transform(lambda x: x.diff().fillna(0))
     )
 
     # ── Speed columns ─────────────────────────────────────
-    for col in ["SpeedI1","SpeedI2","SpeedFL","SpeedST"]:
+    for col in ["SpeedI1", "SpeedI2", "SpeedFL", "SpeedST"]:
         if col not in laps.columns:
             laps[col] = np.nan
-    laps[["SpeedI1","SpeedI2","SpeedFL","SpeedST"]] = (
-        laps[["SpeedI1","SpeedI2","SpeedFL","SpeedST"]].fillna(
-            laps[["SpeedI1","SpeedI2","SpeedFL","SpeedST"]].mean()
+    laps[["SpeedI1", "SpeedI2", "SpeedFL", "SpeedST"]] = (
+        laps[["SpeedI1", "SpeedI2", "SpeedFL", "SpeedST"]].fillna(
+            laps[["SpeedI1", "SpeedI2", "SpeedFL", "SpeedST"]].mean()
         )
     )
 
@@ -289,10 +312,10 @@ def fetch_session(year: int, round_number: int, circuit: str) -> pd.DataFrame:
     laps = incident_features(laps)
 
     # ── Session metadata ──────────────────────────────────
-    laps["year"]                 = year
-    laps["round"]                = round_number
-    laps["circuit"]              = circuit
-    laps["lap_number_in_session"]= laps["LapNumber"]
+    laps["year"]                  = year
+    laps["round"]                 = round_number
+    laps["circuit"]               = circuit
+    laps["lap_number_in_session"] = laps["LapNumber"]
 
     # ── Tyre deg class placeholder (set in feature_engineering) ──
     laps["tyre_deg_class"] = 1  # 0=low, 1=med, 2=high — overridden in step 2
@@ -304,10 +327,10 @@ def fetch_session(year: int, round_number: int, circuit: str) -> pd.DataFrame:
     laps["fuel_remaining_kg"]  = 0
 
     # Placeholder driver-level features (computed in step 2 from full dataset)
-    laps["driver_avg_gap_hist"]  = 0
-    laps["driver_consistency"]   = 0
-    laps["driver_wet_skill"]     = 0
-    laps["car_reliability_score"]= 0
+    laps["driver_avg_gap_hist"]   = 0
+    laps["driver_consistency"]    = 0
+    laps["driver_wet_skill"]      = 0
+    laps["car_reliability_score"] = 0
 
     return laps
 
