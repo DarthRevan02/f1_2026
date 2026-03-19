@@ -1,13 +1,20 @@
 # ============================================================
 # 2_feature_engineering.py  —  Build all model features
 # ============================================================
-# Fixes applied:
+# Fixes applied vs original:
+#
 #   [1] compute_gap_to_pole: drop pre-existing fastest_lap_s
 #       before merge to prevent _x/_y suffix KeyError
-#   [2] compute_tyre_features: use .infer_objects() before
-#       .astype(int) to silence pandas FutureWarning
-#   [3] compute_driver_baselines: guard against empty wet-lap
-#       dataset causing KeyError: driver_wet_skill
+#
+#   [2] compute_tyre_features: use .infer_objects(copy=False)
+#       before .astype(int) to silence pandas FutureWarning
+#
+#   [3] compute_driver_baselines: completely rewritten wet-skill
+#       logic. Pre-initialise driver_wet_skill = 0.0 BEFORE any
+#       computation so the column always exists. Use .map() instead
+#       of merge so it can never fail to create the column —
+#       even when there are zero wet laps, or when no driver
+#       appears in both dry and wet conditions.
 #
 # Usage: python 2_feature_engineering.py
 # Input:  ./data/raw_laps.csv
@@ -150,12 +157,21 @@ def compute_tyre_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_driver_baselines(df: pd.DataFrame) -> pd.DataFrame:
     """
-    FIX: guard against empty wet-lap subset. If no wet-condition
-    races exist in the training data the wet Series is empty and
-    (dry - wet) produces nothing — merge adds no column —
-    causing KeyError on the subsequent fillna line.
-    Check wet.empty first and fall back to 0.0.
+    FIX: pre-initialise driver_wet_skill = 0.0 BEFORE any wet-lap
+    computation so the column ALWAYS exists in the DataFrame.
+
+    The original code used a merge to add the column, which silently
+    fails to create it when:
+      (a) there are zero wet-condition laps (wet Series is empty), OR
+      (b) no driver appears in BOTH dry and wet conditions (after
+          noise filtering) so (dry - wet) is all-NaN and the merge
+          column is never added.
+
+    New approach: map() the per-driver wet-skill values back onto
+    the already-existing column so there is no risk of the column
+    being absent, regardless of how many (or few) wet laps exist.
     """
+    # Per-driver avg gap stats
     stats = (
         df.groupby("Driver")["gap_to_pole"]
         .agg(driver_avg_gap_hist="mean", driver_consistency="std")
@@ -163,16 +179,20 @@ def compute_driver_baselines(df: pd.DataFrame) -> pd.DataFrame:
     )
     df = df.merge(stats, on="Driver", how="left")
 
+    # Pre-initialise wet skill to 0.0 — column now always exists
+    df["driver_wet_skill"] = 0.0
+
     dry = df[df["Rainfall"] == 0].groupby("Driver")["gap_to_pole"].mean()
     wet = df[df["Rainfall"] == 1].groupby("Driver")["gap_to_pole"].mean()
 
     if not wet.empty:
-        wet_skill = (dry - wet).rename("driver_wet_skill")
-        df = df.merge(wet_skill.reset_index(), on="Driver", how="left")
-    else:
-        df["driver_wet_skill"] = 0.0
+        # Only compute and apply for drivers that have both dry and wet laps
+        wet_skill = (dry - wet).dropna()
+        if not wet_skill.empty:
+            # Use .map() on the Driver column — never fails regardless of
+            # how many drivers are in the skill dict vs the DataFrame
+            df["driver_wet_skill"] = df["Driver"].map(wet_skill.to_dict()).fillna(0.0)
 
-    df["driver_wet_skill"] = df["driver_wet_skill"].fillna(0.0)
     return df
 
 
@@ -191,7 +211,7 @@ def compute_track_evolution(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ══════════════════════════════════════════════════════════
-# [3] INTERACTION FEATURES
+# INTERACTION FEATURES
 # ══════════════════════════════════════════════════════════
 
 def compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
