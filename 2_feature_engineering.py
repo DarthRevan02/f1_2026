@@ -4,17 +4,19 @@
 # Fixes applied vs original:
 #
 #   [1] compute_gap_to_pole: drop pre-existing fastest_lap_s
-#       before merge to prevent _x/_y suffix KeyError
+#       before merge → prevents _x/_y suffix KeyError
 #
-#   [2] compute_tyre_features: use .infer_objects(copy=False)
-#       before .astype(int) to silence pandas FutureWarning
+#   [2] compute_tyre_features: .infer_objects(copy=False) before
+#       .astype(int) → silences pandas FutureWarning on FreshTyre
 #
-#   [3] compute_driver_baselines: completely rewritten wet-skill
-#       logic. Pre-initialise driver_wet_skill = 0.0 BEFORE any
-#       computation so the column always exists. Use .map() instead
-#       of merge so it can never fail to create the column —
-#       even when there are zero wet laps, or when no driver
-#       appears in both dry and wet conditions.
+#   [3] compute_driver_baselines:
+#       (a) drop pre-existing driver_avg_gap_hist / driver_consistency
+#           before merging stats → prevents _x/_y suffix KeyError
+#           (synthetic rows from inject_new_driver_baselines already
+#           carry these columns, causing the same rename bug as [1])
+#       (b) pre-initialise driver_wet_skill = 0.0 before wet-lap
+#           computation, then use .map() instead of merge → column
+#           always exists even when there are zero wet-condition laps
 #
 # Usage: python 2_feature_engineering.py
 # Input:  ./data/raw_laps.csv
@@ -63,10 +65,8 @@ STREET_CIRCUITS = {
 
 def compute_gap_to_pole(df: pd.DataFrame) -> pd.DataFrame:
     """
-    FIX: drop pre-existing fastest_lap_s column (written by
-    1_fetch_data.py) before the merge to prevent pandas from
-    producing fastest_lap_s_x / fastest_lap_s_y columns which
-    cause KeyError: 'fastest_lap_s' on the next line.
+    Drop pre-existing fastest_lap_s before merging so pandas
+    does not produce fastest_lap_s_x / fastest_lap_s_y columns.
     """
     if "fastest_lap_s" in df.columns:
         df = df.drop(columns=["fastest_lap_s"])
@@ -132,16 +132,12 @@ def filter_noise(df: pd.DataFrame) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════
 
 def compute_tyre_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    FIX: use .infer_objects(copy=False) before .astype(int) on
-    FreshTyre to silence pandas FutureWarning about downcasting
-    object dtype arrays via fillna.
-    """
     compound_map = {"SOFT": 1, "MEDIUM": 2, "HARD": 3,
                     "INTERMEDIATE": 4, "WET": 5}
     df["tyre_compound_encoded"] = (
         df["Compound"].str.upper().map(compound_map).fillna(2).astype(int)
     )
+    # infer_objects(copy=False) silences FutureWarning on bool→int downcast
     df["is_fresh_tyre"] = (
         df["FreshTyre"].fillna(False).infer_objects(copy=False).astype(int)
     )
@@ -157,21 +153,21 @@ def compute_tyre_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_driver_baselines(df: pd.DataFrame) -> pd.DataFrame:
     """
-    FIX: pre-initialise driver_wet_skill = 0.0 BEFORE any wet-lap
-    computation so the column ALWAYS exists in the DataFrame.
+    FIX (a): drop driver_avg_gap_hist and driver_consistency before
+    merging stats. inject_new_driver_baselines already writes these
+    columns onto synthetic rows, so a naive merge would rename them
+    to _x / _y and KeyError: 'driver_avg_gap_hist' follows.
 
-    The original code used a merge to add the column, which silently
-    fails to create it when:
-      (a) there are zero wet-condition laps (wet Series is empty), OR
-      (b) no driver appears in BOTH dry and wet conditions (after
-          noise filtering) so (dry - wet) is all-NaN and the merge
-          column is never added.
-
-    New approach: map() the per-driver wet-skill values back onto
-    the already-existing column so there is no risk of the column
-    being absent, regardless of how many (or few) wet laps exist.
+    FIX (b): pre-initialise driver_wet_skill = 0.0 then use .map()
+    so the column always exists even when there are zero wet laps.
     """
-    # Per-driver avg gap stats
+    # Drop columns that synthetic rows may already carry so the merge
+    # never produces _x / _y duplicates.
+    for col in ["driver_avg_gap_hist", "driver_consistency",
+                "driver_wet_skill", "driver_dnf_rate"]:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+
     stats = (
         df.groupby("Driver")["gap_to_pole"]
         .agg(driver_avg_gap_hist="mean", driver_consistency="std")
@@ -179,19 +175,18 @@ def compute_driver_baselines(df: pd.DataFrame) -> pd.DataFrame:
     )
     df = df.merge(stats, on="Driver", how="left")
 
-    # Pre-initialise wet skill to 0.0 — column now always exists
+    # Pre-initialise so the column always exists
     df["driver_wet_skill"] = 0.0
 
     dry = df[df["Rainfall"] == 0].groupby("Driver")["gap_to_pole"].mean()
     wet = df[df["Rainfall"] == 1].groupby("Driver")["gap_to_pole"].mean()
 
     if not wet.empty:
-        # Only compute and apply for drivers that have both dry and wet laps
         wet_skill = (dry - wet).dropna()
         if not wet_skill.empty:
-            # Use .map() on the Driver column — never fails regardless of
-            # how many drivers are in the skill dict vs the DataFrame
-            df["driver_wet_skill"] = df["Driver"].map(wet_skill.to_dict()).fillna(0.0)
+            df["driver_wet_skill"] = (
+                df["Driver"].map(wet_skill.to_dict()).fillna(0.0)
+            )
 
     return df
 
@@ -250,6 +245,13 @@ def merge_reliability_scores(df: pd.DataFrame) -> pd.DataFrame:
         .last().reset_index()
         .rename(columns={"driver": "Driver"})
     )
+
+    # Drop pre-existing reliability cols to prevent _x/_y duplicates
+    for col in ["car_reliability_score", "engine_dnf_rate",
+                "engine_failure_prob", "driver_dnf_rate"]:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+
     df = df.merge(team_rel,   on="Team",   how="left")
     df = df.merge(driver_rel, on="Driver", how="left")
 

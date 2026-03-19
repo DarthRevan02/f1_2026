@@ -780,7 +780,7 @@ def run_setup():
     section("INITIAL SETUP")
     print(f"""
   This will:
-    1. Download 2022–2024 race data from FastF1  (~30–60 min, cached)
+    1. Download 2021–2024 race data from FastF1  (~30–60 min, cached)
     2. Build features
     3. Train the base XGBoost model
 
@@ -791,7 +791,7 @@ def run_setup():
         return
 
     scripts = [
-        ("1_fetch_data.py",            "Fetching 2022–2024 race data"),
+        ("1_fetch_data.py",            "Fetching 2021–2024 race data"),
         ("2_feature_engineering.py",   "Building features"),
         ("3_train_model.py",           "Training base model"),
     ]

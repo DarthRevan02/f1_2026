@@ -1,0 +1,208 @@
+{
+  "driver": {
+    "RUS": {
+      "team": "Mercedes",
+      "pts": 25,
+      "wins": 1,
+      "podiums": 1,
+      "dnfs": 0
+    },
+    "ANT": {
+      "team": "Mercedes",
+      "pts": 18,
+      "wins": 0,
+      "podiums": 1,
+      "dnfs": 0
+    },
+    "LEC": {
+      "team": "Ferrari",
+      "pts": 15,
+      "wins": 0,
+      "podiums": 1,
+      "dnfs": 0
+    },
+    "HAM": {
+      "team": "Ferrari",
+      "pts": 12,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "NOR": {
+      "team": "McLaren",
+      "pts": 10,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "VER": {
+      "team": "Red Bull Racing",
+      "pts": 8,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "BEA": {
+      "team": "Haas F1 Team",
+      "pts": 6,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "LIN": {
+      "team": "Racing Bulls",
+      "pts": 4,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "BOR": {
+      "team": "Audi",
+      "pts": 2,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "GAS": {
+      "team": "Alpine",
+      "pts": 1,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "OCO": {
+      "team": "Haas F1 Team",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "ALB": {
+      "team": "Williams",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "LAW": {
+      "team": "Racing Bulls",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "COL": {
+      "team": "Alpine",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "SAI": {
+      "team": "Williams",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "PER": {
+      "team": "Cadillac",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 0
+    },
+    "STR": {
+      "team": "Aston Martin",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 1
+    },
+    "ALO": {
+      "team": "Aston Martin",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 1
+    },
+    "BOT": {
+      "team": "Cadillac",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 1
+    },
+    "HAD": {
+      "team": "Red Bull Racing",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 1
+    },
+    "PIA": {
+      "team": "McLaren",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 1
+    },
+    "HUL": {
+      "team": "Audi",
+      "pts": 0,
+      "wins": 0,
+      "podiums": 0,
+      "dnfs": 1
+    }
+  },
+  "constructor": {
+    "Mercedes": {
+      "pts": 43,
+      "wins": 1
+    },
+    "Ferrari": {
+      "pts": 27,
+      "wins": 0
+    },
+    "McLaren": {
+      "pts": 10,
+      "wins": 0
+    },
+    "Red Bull Racing": {
+      "pts": 8,
+      "wins": 0
+    },
+    "Haas F1 Team": {
+      "pts": 6,
+      "wins": 0
+    },
+    "Racing Bulls": {
+      "pts": 4,
+      "wins": 0
+    },
+    "Audi": {
+      "pts": 2,
+      "wins": 0
+    },
+    "Alpine": {
+      "pts": 1,
+      "wins": 0
+    },
+    "Williams": {
+      "pts": 0,
+      "wins": 0
+    },
+    "Cadillac": {
+      "pts": 0,
+      "wins": 0
+    },
+    "Aston Martin": {
+      "pts": 0,
+      "wins": 0
+    }
+  },
+  "races_done": [
+    1
+  ],
+  "last_updated": "2026-03-19 15:52"
+}

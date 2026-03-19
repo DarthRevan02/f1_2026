@@ -3,7 +3,7 @@
 # ============================================================
 
 # ── Seasons for base historical training ──────────────────
-SEASONS = [2022, 2023, 2024]
+SEASONS = [2021, 2022, 2023, 2024]
 
 # ── Paths ─────────────────────────────────────────────────
 CACHE_DIR          = "./cache"
@@ -168,25 +168,25 @@ FEATURE_COLS = [
 # after initial training to find optimal values for your dataset
 # and update these.
 XGBOOST_PARAMS = {
-    "n_estimators":          1000,   # max trees; early stopping finds the real best
-    "max_depth":             6,      # depth 6 = good balance, avoids overfitting
-    "learning_rate":         0.02,   # low LR + many trees = better generalisation
-    "subsample":             0.8,    # row sampling per tree → reduces overfitting
-    "colsample_bytree":      0.75,   # feature sampling per tree → reduces overfitting
-    "min_child_weight":      3,      # min samples per leaf → avoids tiny splits
-    "gamma":                 0.1,    # min loss reduction to make a split
-    "reg_alpha":             0.05,   # L1 regularisation
-    "reg_lambda":            1.2,    # L2 regularisation
+    "n_estimators":          1000,
+    "max_depth":             4,
+    "learning_rate":         0.005,
+    "subsample":             0.7,
+    "colsample_bytree":      0.65,
+    "min_child_weight":      2,
+    "gamma":                 0.1,
+    "reg_alpha":             0.2,
+    "reg_lambda":            1.0,
     "random_state":          42,
-    "tree_method":           "hist", # faster training, same accuracy as exact
-    "early_stopping_rounds": 50,     # stop if no improvement for 50 rounds
+    "tree_method":           "hist",
+    "early_stopping_rounds": 50,
 }
 
 # ── Train / test split strategy ───────────────────────────
 # TIME-BASED: train on 2022+2023, validate on 2024.
 # Never random-split F1 data — laps from the same race would
 # appear in both train and test, inflating R².
-TRAIN_YEARS   = [2022, 2023]
+TRAIN_YEARS   = [2021, 2022, 2023]
 VALIDATE_YEAR = 2024
 
 TEST_SIZE    = 0.2      # fallback if year column is missing
