@@ -1,32 +1,13 @@
 # ============================================================
 # 2_feature_engineering.py  —  Build all model features
 # ============================================================
-# R² improvement changes vs a basic script:
-#
-#   [1] TARGET = gap_to_pole, not raw LapTime_s
-#       Circuit-normalised → model doesn't waste capacity on
-#       baseline lap time differences between circuits.
-#       Impact: +0.08–0.12 R²
-#
-#   [2] Noise filtering (SC laps, out-laps, anomalies removed)
-#       Laps the model can't learn from add irreducible noise.
-#       Impact: +0.05–0.10 R²
-#
-#   [3] 6 interaction features (tyre×temp, wet×deg, etc.)
-#       Non-linear combinations XGBoost can better split on.
-#       Impact: +0.03–0.05 R²
-#
-#   [4] Per-stint tyre deg rate (not just TyreLife)
-#       Captures the slope of deg, not just the absolute age.
-#       Impact: +0.02–0.03 R²
-#
-#   [5] Driver baselines computed AFTER noise filtering
-#       Cleaner laps → more accurate skill estimates.
-#       Impact: +0.01–0.02 R²
-#
-#   [6] Grid normalisation (2026 team remapping)
-#       Historical team labels match 2026 constructors.
-#       Prevents model learning e.g. "Hamilton = Mercedes car".
+# Fixes applied:
+#   [1] compute_gap_to_pole: drop pre-existing fastest_lap_s
+#       before merge to prevent _x/_y suffix KeyError
+#   [2] compute_tyre_features: use .infer_objects() before
+#       .astype(int) to silence pandas FutureWarning
+#   [3] compute_driver_baselines: guard against empty wet-lap
+#       dataset causing KeyError: driver_wet_skill
 #
 # Usage: python 2_feature_engineering.py
 # Input:  ./data/raw_laps.csv
@@ -53,7 +34,6 @@ os.makedirs("./models", exist_ok=True)
 
 
 # ── Circuit characteristics ────────────────────────────────
-# Tyre degradation class: 0=low 1=medium 2=high
 CIRCUIT_DEG = {
     "Bahrain": 2,      "Saudi Arabia": 0, "Australia": 1,
     "Japan": 0,        "China": 2,        "Miami": 1,
@@ -65,7 +45,6 @@ CIRCUIT_DEG = {
     "Abu Dhabi": 1,    "Azerbaijan": 0,   "Madrid": 1,
 }
 
-# Street circuits: overtaking is harder → grid position matters more
 STREET_CIRCUITS = {
     "Monaco", "Singapore", "Azerbaijan", "Las Vegas", "Saudi Arabia", "Madrid"
 }
@@ -77,16 +56,14 @@ STREET_CIRCUITS = {
 
 def compute_gap_to_pole(df: pd.DataFrame) -> pd.DataFrame:
     """
-    For each race + lap number, compute each driver's delta
-    to the fastest lap set on that same lap number.
-
-    Why this beats raw LapTime_s:
-      - Monaco lap ~75s, Monza ~82s, Bahrain ~92s
-      - Raw LapTime_s makes the model learn those baselines
-        rather than relative performance
-      - gap_to_pole is always 0–5s → same scale, every circuit
-      - Biggest single R² improvement after switching to XGBoost
+    FIX: drop pre-existing fastest_lap_s column (written by
+    1_fetch_data.py) before the merge to prevent pandas from
+    producing fastest_lap_s_x / fastest_lap_s_y columns which
+    cause KeyError: 'fastest_lap_s' on the next line.
     """
+    if "fastest_lap_s" in df.columns:
+        df = df.drop(columns=["fastest_lap_s"])
+
     fastest = (
         df.groupby(["year", "round", "LapNumber"])["LapTime_s"]
         .min().reset_index()
@@ -102,41 +79,30 @@ def compute_gap_to_pole(df: pd.DataFrame) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════
 
 def filter_noise(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Remove laps the model fundamentally cannot learn from.
-    Session-aware: qualifying laps have different valid ranges
-    than race laps, so filtering adapts per session_type.
-    """
     n = len(df)
 
-    # Ensure session_type exists — default to "race" for historical data
     if "session_type" not in df.columns:
         df["session_type"] = "race"
 
     is_quali_type = df["session_type"].isin(["quali", "sprint_quali"])
 
-    # SC/VSC/red flag: only filter race/sprint sessions
-    # Quali red flags already abort the lap — time will be NaN or slow
     race_clean  = df[~is_quali_type & df["TrackStatus_encoded"].isin(FILTER_TRACK_STATUS)]
     quali_clean = df[is_quali_type]
     df = pd.concat([race_clean, quali_clean], ignore_index=True)
     print(f"    Track status   : -{n - len(df):>6} laps  (SC/VSC — race/sprint only)")
     n = len(df)
 
-    # Opening laps: only filter race/sprint (quali has no fuel/cold tyre issue)
-    race_df  = df[~df["session_type"].isin(["quali","sprint_quali"])]
-    quali_df = df[ df["session_type"].isin(["quali","sprint_quali"])]
+    race_df  = df[~df["session_type"].isin(["quali", "sprint_quali"])]
+    quali_df = df[ df["session_type"].isin(["quali", "sprint_quali"])]
     race_df  = race_df[race_df["LapNumber"] >= FILTER_MIN_LAP_NUMBER]
     df = pd.concat([race_df, quali_df], ignore_index=True)
     print(f"    Opening laps   : -{n - len(df):>6} laps  (first {FILTER_MIN_LAP_NUMBER} — race/sprint only)")
     n = len(df)
 
-    # Out-laps: apply to all sessions
     df = df[df["TyreLife"] >= FILTER_MIN_TYRE_LIFE]
     print(f"    Out-laps       : -{n - len(df):>6} laps  (TyreLife < {FILTER_MIN_TYRE_LIFE})")
     n = len(df)
 
-    # Top 2% per session type (so fast quali laps don't get cut by race percentile)
     clean_parts = []
     for stype, grp in df.groupby("session_type"):
         ceil = grp["LapTime_s"].quantile(FILTER_LAPTIME_QUANTILE)
@@ -145,7 +111,6 @@ def filter_noise(df: pd.DataFrame) -> pd.DataFrame:
     print(f"    Lap time p98   : -{n - len(df):>6} laps  (per session type)")
     n = len(df)
 
-    # Gap ceiling: applies to all sessions
     df = df[df["gap_to_pole"] <= FILTER_MAX_GAP_TO_POLE]
     df = df[df["gap_to_pole"] >= 0]
     print(f"    Gap ceiling    : -{n - len(df):>6} laps  (>{FILTER_MAX_GAP_TO_POLE}s off pace)")
@@ -161,35 +126,35 @@ def filter_noise(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_tyre_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Tyre compound encoding + per-stint deg rate.
-    deg_rate is the slope of lap time vs tyre age within a stint —
-    more informative than raw TyreLife because it shows how FAST
-    the tyre is degrading, not just how old it is.
+    FIX: use .infer_objects(copy=False) before .astype(int) on
+    FreshTyre to silence pandas FutureWarning about downcasting
+    object dtype arrays via fillna.
     """
     compound_map = {"SOFT": 1, "MEDIUM": 2, "HARD": 3,
                     "INTERMEDIATE": 4, "WET": 5}
     df["tyre_compound_encoded"] = (
         df["Compound"].str.upper().map(compound_map).fillna(2).astype(int)
     )
-    df["is_fresh_tyre"] = df["FreshTyre"].fillna(False).astype(int)
+    df["is_fresh_tyre"] = (
+        df["FreshTyre"].fillna(False).infer_objects(copy=False).astype(int)
+    )
 
-    # Per-stint tyre deg rate (lap time delta within stint)
     df = df.sort_values(["year", "round", "Driver", "LapNumber"])
     df["tyre_deg_rate"] = (
         df.groupby(["year", "round", "Driver", "stint_number"])["LapTime_s"]
         .transform(lambda x: x.diff().fillna(0))
-        .clip(-2, 2)   # clip: bleed-through from pit stop timing
+        .clip(-2, 2)
     )
     return df
 
 
 def compute_driver_baselines(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Per-driver skill metrics. Computed AFTER noise filtering so
-    career averages reflect only clean, representative laps.
-
-    driver_avg_gap_hist is consistently the 2nd or 3rd most
-    important feature in the trained model (after team/driver encoded).
+    FIX: guard against empty wet-lap subset. If no wet-condition
+    races exist in the training data the wet Series is empty and
+    (dry - wet) produces nothing — merge adds no column —
+    causing KeyError on the subsequent fillna line.
+    Check wet.empty first and fall back to 0.0.
     """
     stats = (
         df.groupby("Driver")["gap_to_pole"]
@@ -198,17 +163,20 @@ def compute_driver_baselines(df: pd.DataFrame) -> pd.DataFrame:
     )
     df = df.merge(stats, on="Driver", how="left")
 
-    # Wet skill: how much better a driver is in rain vs dry
     dry = df[df["Rainfall"] == 0].groupby("Driver")["gap_to_pole"].mean()
     wet = df[df["Rainfall"] == 1].groupby("Driver")["gap_to_pole"].mean()
-    wet_skill = (dry - wet).rename("driver_wet_skill")
-    df = df.merge(wet_skill.reset_index(), on="Driver", how="left")
-    df["driver_wet_skill"] = df["driver_wet_skill"].fillna(0)
+
+    if not wet.empty:
+        wet_skill = (dry - wet).rename("driver_wet_skill")
+        df = df.merge(wet_skill.reset_index(), on="Driver", how="left")
+    else:
+        df["driver_wet_skill"] = 0.0
+
+    df["driver_wet_skill"] = df["driver_wet_skill"].fillna(0.0)
     return df
 
 
 def compute_strategy_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Fuel load proxy from lap number and stint context."""
     df["total_race_laps"] = df.groupby(["year", "round"])["LapNumber"].transform("max")
     df["fuel_load_proxy"] = (
         (df["total_race_laps"] - df["lap_number_in_session"]) * 1.8
@@ -217,7 +185,6 @@ def compute_strategy_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_track_evolution(df: pd.DataFrame) -> pd.DataFrame:
-    """Track rubber / temperature delta from race start."""
     baseline = df.groupby(["year", "round"])["TrackTemp"].transform("first")
     df["track_temp_delta"] = (df["TrackTemp"] - baseline).fillna(0)
     return df
@@ -228,47 +195,15 @@ def compute_track_evolution(df: pd.DataFrame) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════
 
 def compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    6 interaction features that capture non-linear effects XGBoost
-    can learn better when given explicit cross-feature signals.
-    Each is grounded in F1 domain knowledge.
-
-    Collectively these add +0.03–0.05 R² vs features in isolation.
-    """
-
-    # Tyre age × Track temperature
-    # Deg accelerates non-linearly in heat — a SOFT on lap 15 at
-    # 55°C track is dramatically different from the same at 30°C
-    df["tyre_temp_interaction"] = df["TyreLife"] * df["TrackTemp"]
-
-    # Rain × Circuit deg class
-    # High-deg circuits in wet produce very chaotic lap times.
-    # Neither feature alone captures the combined effect.
-    df["wet_deg_interaction"] = df["Rainfall"] * df["tyre_deg_class"]
-
-    # Grid position × Street circuit flag
-    # On street circuits, P5 on grid ≈ P5 at finish because passing
-    # is near-impossible. On open circuits, positions change freely.
-    df["is_street_circuit"] = df["circuit"].isin(STREET_CIRCUITS).astype(int)
+    df["tyre_temp_interaction"]   = df["TyreLife"] * df["TrackTemp"]
+    df["wet_deg_interaction"]     = df["Rainfall"] * df["tyre_deg_class"]
+    df["is_street_circuit"]       = df["circuit"].isin(STREET_CIRCUITS).astype(int)
     df["grid_street_interaction"] = df["grid_position"] * (
         df["is_street_circuit"].map({1: 1.5, 0: 1.0})
     )
-
-    # Driver skill × Tyre life
-    # Elite drivers extend tyre windows — their gap grows less steeply
-    # with age vs midfield/backmarkers. Captures tyre management skill.
     df["driver_tyre_interaction"] = df["driver_avg_gap_hist"] * df["TyreLife"]
-
-    # Speed trap × Track temperature
-    # PU output drops as ambient temperature rises. High-speed circuit
-    # in heat = closer to thermal management limits.
-    df["speed_temp_interaction"] = df["SpeedST"].fillna(300) * df["TrackTemp"]
-
-    # Fuel load × Stint number
-    # Fuel effect is heaviest in stint 1 and diminishes each stint.
-    # Captures the interaction between remaining fuel and race phase.
-    df["fuel_stint_interaction"] = df["fuel_load_proxy"] * df["stint_number"]
-
+    df["speed_temp_interaction"]  = df["SpeedST"].fillna(300) * df["TrackTemp"]
+    df["fuel_stint_interaction"]  = df["fuel_load_proxy"] * df["stint_number"]
     return df
 
 
@@ -277,7 +212,6 @@ def compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════
 
 def merge_reliability_scores(df: pd.DataFrame) -> pd.DataFrame:
-    """Merge rolling team/driver reliability scores from reliability.py."""
     if not os.path.exists(RELIABILITY_PATH):
         print("  Reliability file not found — building now (takes a few minutes)...")
         build_reliability(SEASONS)
@@ -311,7 +245,6 @@ def merge_reliability_scores(df: pd.DataFrame) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════
 
 def encode_and_save(df: pd.DataFrame, col: str) -> pd.DataFrame:
-    """Label-encode a column and save the encoder for use at prediction time."""
     le = LabelEncoder()
     df[f"{col}_encoded"] = le.fit_transform(df[col].astype(str))
     joblib.dump(le, f"./models/encoder_{col}.pkl")
@@ -334,14 +267,13 @@ def main():
     df = pd.read_csv(RAW_DATA_PATH)
     print(f"  {len(df):,} raw laps loaded from {RAW_DATA_PATH}")
 
-    # Pre-compute columns needed before filtering
     df["TrackStatus_encoded"] = (
         pd.to_numeric(df["TrackStatus"], errors="coerce").fillna(1).astype(int)
     )
-    df["LapNumber"]           = df["LapNumber"].fillna(0).astype(int)
-    df["TyreLife"]            = df["TyreLife"].fillna(0).astype(int)
+    df["LapNumber"]             = df["LapNumber"].fillna(0).astype(int)
+    df["TyreLife"]              = df["TyreLife"].fillna(0).astype(int)
     df["lap_number_in_session"] = df["LapNumber"]
-    df["Rainfall"]            = df["Rainfall"].fillna(0).astype(float)
+    df["Rainfall"]              = df["Rainfall"].fillna(0).astype(float)
     df["stint_number"] = df.groupby(["year", "round", "Driver"])["Stint"].transform(
         lambda x: pd.factorize(x)[0] + 1
     )
@@ -352,8 +284,6 @@ def main():
     # ── Grid normalisation ────────────────────────────────
     print("\n[2/9] Normalising to 2026 grid...")
 
-    # Ensure session_type exists — historical data fetched before
-    # multi-session support was added may not have this column
     if "session_type" not in df.columns:
         df["session_type"] = "race"
         print("  session_type column missing — defaulting to 'race'")
@@ -362,8 +292,8 @@ def main():
         print(f"  Session types in data: {session_summary}")
 
     print_grid_audit()
-    df = filter_to_2026_grid_only(df)    # drop non-2026 drivers
-    df = normalize_teams(df)              # remap team names + driver→2026 team
+    df = filter_to_2026_grid_only(df)
+    df = normalize_teams(df)
 
     # ── Target variable ───────────────────────────────────
     print("\n[3/9] Computing gap_to_pole target...")
@@ -371,14 +301,12 @@ def main():
     print(f"  gap_to_pole range: 0.0 – {df['gap_to_pole'].max():.2f}s")
 
     # ── Noise filtering ───────────────────────────────────
-    # Must happen AFTER gap_to_pole is computed (uses it for ceiling filter)
     print("\n[4/9] Filtering noisy laps...")
     before = len(df)
     df = filter_noise(df)
     print(f"  Removed {before - len(df):,} noisy laps "
           f"({(before - len(df)) / before * 100:.1f}% of data)")
 
-    # Inject rookie baselines AFTER filtering (so synthetic rows aren't lost)
     df = inject_new_driver_baselines(df)
 
     # ── Core features ─────────────────────────────────────
@@ -403,7 +331,7 @@ def main():
     df = encode_and_save(df, "Driver")
     df = encode_and_save(df, "Team")
     df = encode_and_save(df, "circuit")
-    df = encode_and_save(df, "session_type")   # race=?, quali=?, sprint=?, sprint_quali=?
+    df = encode_and_save(df, "session_type")
     df = df.rename(columns={
         "Driver_encoded":       "driver_encoded",
         "Team_encoded":         "team_encoded",
@@ -436,7 +364,6 @@ def main():
         df["driver_consistency"].median()
     )
 
-    # Ensure every feature column exists (create as 0 if missing)
     missing_created = []
     for col in FEATURE_COLS:
         if col not in df.columns:
@@ -445,7 +372,6 @@ def main():
     if missing_created:
         print(f"  ⚠ Created as 0: {missing_created}")
 
-    # Final target validity check
     df = df[df[TARGET].notna() & (df[TARGET] >= 0)]
 
     # ── Save ──────────────────────────────────────────────
